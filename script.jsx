@@ -13,8 +13,8 @@ const POSTS_ENDPOINT =
   `?fields=message,created_time,comments.summary(true).limit(0)` + // give summary count only (no comment data)
   `&access_token=${ACCESS_TOKEN}`;
 
-const COMMENTS_PAGE_LIMIT = 5;
-const ATTACHMENTS_PER_PAGE = 4; // numeric pagination size for attachments
+const COMMENTS_INITIAL_LIMIT = 2; // initial fetch when 'Show Comments' clicked
+const COMMENTS_PAGE_LIMIT = 5; // subsequent 'Load More' fetches
 
 function App() {
   const [posts, setPosts] = useState([]);
@@ -42,9 +42,6 @@ function App() {
         attachments: null, // null means not fetched; [] means fetched and empty
         attachmentsLoading: false,
         attachmentsError: null,
-        attachmentsPage: 1,
-        attachmentsPagesCount: 0,
-        showAttachments: false,
         // comments lazy state
         commentsPages: [], // array of {data:[], cursors:{before,after}}
         commentsLoading: false,
@@ -129,11 +126,7 @@ function App() {
         }
       });
 
-      const pagesCount = Math.max(
-        1,
-        Math.ceil(flat.length / ATTACHMENTS_PER_PAGE)
-      );
-
+      // No need for pagination calculations anymore
       setPosts((prev) =>
         prev.map((p) =>
           p.id === postId
@@ -142,8 +135,6 @@ function App() {
                 attachments: flat,
                 attachmentsLoading: false,
                 attachmentsError: null,
-                attachmentsPage: 1,
-                attachmentsPagesCount: pagesCount,
               }
             : p
         )
@@ -164,22 +155,6 @@ function App() {
     }
   }
 
-  function showAttachmentsToggle(postId) {
-    // toggle visibility; fetch attachments if opening and not fetched
-    setPosts((prev) =>
-      prev.map((p) => {
-        if (p.id !== postId) return p;
-        const willShow = !p.showAttachments;
-        if (willShow && p.attachments === null) {
-          // fetch attachments then set showAttachments true
-          loadAttachments(postId);
-          return { ...p, showAttachments: true };
-        }
-        return { ...p, showAttachments: willShow };
-      })
-    );
-  }
-
   // Toggle comments visibility and fetch first page if needed
   function toggleComments(postId) {
     setPosts((prev) =>
@@ -190,16 +165,12 @@ function App() {
           // fetch first page
           loadCommentsPage(postId, 1);
         }
+        // If hiding comments, reset state
+        if (!willShow) {
+          return { ...p, showComments: willShow };
+        }
         return { ...p, showComments: willShow };
       })
-    );
-  }
-
-  function setAttachmentsPage(postId, pageNum) {
-    setPosts((prev) =>
-      prev.map((p) =>
-        p.id === postId ? { ...p, attachmentsPage: pageNum } : p
-      )
     );
   }
 
@@ -240,8 +211,8 @@ function App() {
       while (continueFetch && pages.length < targetPage) {
         let fetchUrl;
         if (!lastPage) {
-          // first page: no 'after' cursor
-          fetchUrl = `https://graph.facebook.com/v23.0/${postId}/comments?fields=from,message,created_time&limit=${COMMENTS_PAGE_LIMIT}&access_token=${ACCESS_TOKEN}`;
+          // first page: no 'after' cursor - fetch only 2 comments initially
+          fetchUrl = `https://graph.facebook.com/v23.0/${postId}/comments?fields=from,message,created_time&limit=${COMMENTS_INITIAL_LIMIT}&access_token=${ACCESS_TOKEN}`;
         } else if (lastPage.cursors && lastPage.cursors.after) {
           // use 'after' cursor
           const after = lastPage.cursors.after;
@@ -315,114 +286,41 @@ function App() {
     }
   }
 
-  // Utility: render numeric pagination UI for pages (1..N). For comments we render based on known pages length but allow +2 extra numbers to fetch ahead.
-  function renderPageButtons(
-    current,
-    totalKnownPages,
-    onClickNumber,
-    allowExtra = 2,
-    maxButtons = 20
-  ) {
-    // We'll show pages 1 .. max( totalKnownPages + allowExtra, current+allowExtra ) but cap to maxButtons
-    const totalToShow = Math.min(
-      maxButtons,
-      Math.max(totalKnownPages + allowExtra, current + allowExtra)
-    );
-    const nums = Array.from({ length: totalToShow }, (_, i) => i + 1);
-    return (
-      <div className="page-buttons">
-        {nums.map((n) => (
-          <button
-            key={n}
-            className={`btn ${n === current ? "active" : ""}`}
-            onClick={() => onClickNumber(n)}
-            disabled={n === current}
-            aria-current={n === current ? "page" : undefined}
-            title={n === current ? `Page ${n} (current)` : `Go to page ${n}`}
-            type="button"
-          >
-            {n}
-          </button>
-        ))}
-      </div>
-    );
-  }
-
-  // component mount: optionally auto-load posts? We'll let user click button.
-  // useEffect(() => { fetchPosts(); }, []);
-
   // ---------- Render helpers ----------
   function renderAttachmentsSection(post) {
-    // if null -> not fetched yet (show button to fetch)
-    if (post.attachments === null) {
-      return (
-        <div className="mt8">
-          <button
-            className="btn"
-            onClick={() => loadAttachments(post.id)}
-            disabled={post.attachmentsLoading}
-          >
-            {post.attachmentsLoading
-              ? "Loading attachments..."
-              : "Load attachments"}
-          </button>
-          {post.attachmentsError && (
-            <div className="error mt8">Error: {post.attachmentsError}</div>
-          )}
-        </div>
-      );
-    }
-    // attachments fetched (maybe empty)
+    // Show all attachments automatically in a beautiful grid
     const flat = post.attachments || [];
-    if (flat.length === 0)
-      return (
-        <div className="mt8">
-          <em>No attachments</em>
-        </div>
-      );
-
-    const totalPages = Math.max(
-      1,
-      Math.ceil(flat.length / ATTACHMENTS_PER_PAGE)
-    );
-    const page = Math.min(Math.max(1, post.attachmentsPage || 1), totalPages);
-    const start = (page - 1) * ATTACHMENTS_PER_PAGE;
-    const slice = flat.slice(start, start + ATTACHMENTS_PER_PAGE);
+    if (flat.length === 0) return null;
 
     return (
       <div className="mt8">
-        <div className="attachment-row">
-          {slice.map((a, idx) => (
+        <div className="attachments-grid">
+          {flat.map((a, idx) => (
             <div key={a.id || idx} className="attachment-card">
               {a.title && <div className="attachment-title">{a.title}</div>}
               {a.description && (
                 <div className="attachment-desc">{a.description}</div>
               )}
               {a.url ? (
-                a.url.match(/\.(jpeg|jpg|gif|png|webp)$/i) ? (
-                  <img src={a.url} alt="att" className="attachment-img" />
-                ) : (
-                  <div className="attachment-link">
-                    <a href={a.url} target="_blank" rel="noreferrer">
-                      {a.url}
-                    </a>
-                  </div>
-                )
+                <img
+                  src={a.url}
+                  alt={a.title || "attachment"}
+                  className="attachment-img"
+                  onError={(e) => {
+                    // Replace broken images with a small inline placeholder
+                    e.target.onerror = null;
+                    e.target.style.display = "none";
+                    const ph = document.createElement("div");
+                    ph.className = "italic mt8";
+                    ph.textContent = "📄 No preview available";
+                    e.target.parentNode && e.target.parentNode.appendChild(ph);
+                  }}
+                />
               ) : (
-                <div className="italic mt8">No preview</div>
+                <div className="italic mt8">📄 No preview available</div>
               )}
             </div>
           ))}
-        </div>
-
-        {/* Numeric pagination */}
-        <div className="mt10">
-          {renderPageButtons(
-            post.attachmentsPage,
-            totalPages,
-            (n) => setAttachmentsPage(post.id, n),
-            0 /* don't allow extra pages for attachments -- client-side known */
-          )}
         </div>
       </div>
     );
@@ -431,172 +329,213 @@ function App() {
   function renderCommentsSection(post) {
     const pages = post.commentsPages || [];
     const current = post.commentsCurrentPage || 1;
-    // if no pages fetched yet -> show a button to load page 1
-    if (!pages.length) {
-      return (
-        <div className="mt8">
-          <button
-            className="btn"
-            onClick={() => loadCommentsPage(post.id, 1)}
-            disabled={post.commentsLoading}
-          >
-            {post.commentsLoading
-              ? "Loading comments..."
-              : `Load comments (5 per page)`}
-          </button>
-          {post.commentsError && (
-            <div className="error mt8">Error: {post.commentsError}</div>
-          )}
-        </div>
-      );
+
+    // Collect all comments from all loaded pages
+    const allComments = [];
+    for (let i = 0; i < current && i < pages.length; i++) {
+      if (pages[i] && pages[i].data) {
+        allComments.push(...pages[i].data);
+      }
     }
 
-    const pageObj = pages[current - 1] || { data: [] };
-    const comments = pageObj.data || [];
+    // Check if there are more comments to load
+    const canLoadMore =
+      pages.length === 0 ||
+      (pages.length > 0 && pages[pages.length - 1].cursors.after);
 
     return (
-      <div className="mt8">
-        {post.commentsLoading && <div>Loading...</div>}
+      <div className="comments-section">
         {post.commentsError && (
-          <div className="error">Error: {post.commentsError}</div>
+          <div className="error mb16">Error: {post.commentsError}</div>
         )}
 
-        {!post.commentsLoading && comments.length === 0 && (
-          <div>
-            <em>No comments on this page</em>
+        {allComments.length === 0 && !post.commentsLoading && !canLoadMore && (
+          <div className="text-center">
+            <em>💬 No comments yet</em>
           </div>
         )}
 
-        {comments.map((c) => (
+        {
+          // Show all loaded comments
+        }
+        {allComments.map((c) => (
           <div key={c.id} className="comment-item">
-            <div className="comment-from">{c.fromName}</div>
+            <div className="comment-from">👤 {c.fromName}</div>
             <div className="comment-time">
-              {new Date(c.created_time).toLocaleString()}
+              🕒 {new Date(c.created_time).toLocaleString()}
             </div>
             <div className="comment-text">{c.message}</div>
           </div>
         ))}
 
-        {/* Numeric comment pages. We allow extra buttons so the user can click to fetch next pages.
-            totalKnownPages = pages.length. We'll allow +2 extra numbers to fetch ahead */}
-        <div className="mt10">
-          {renderPageButtons(
-            current,
-            pages.length,
-            (n) => loadCommentsPage(post.id, n),
-            2,
-            25
-          )}
-        </div>
+        {/** Only show the control when there are at least 3 comments **/}
+        {(post.commentCount || 0) >= 3 && (
+          <button
+            className="load-more-btn"
+            onClick={() => {
+              // Always fetch the next page of comments if available
+              if (canLoadMore) {
+                loadCommentsPage(post.id, current + 1);
+              }
+            }}
+            disabled={post.commentsLoading || !canLoadMore}
+          >
+            {post.commentsLoading ? (
+              <>
+                <span className="spinner spinner-with-margin"></span>
+                Loading More Comments...
+              </>
+            ) : (
+              `💬 Show more comments`
+            )}
+          </button>
+        )}
       </div>
     );
   }
 
   return (
-    <div className="container app-container">
-      <h1>FB Explorer — POSTS with comments & attachments</h1>
+    <div className="container">
+      {/* Modern glassmorphism header */}
+      <div className="app-header">
+        <h1>FB Explorer ⚡</h1>
+
+        {/* <p className="app-header-subtitle">
+          Premium Social Media Dashboard with Modern UI
+        </p> */}
+
+        <h4>Click "Get Posts" to start exploring amazing content</h4>
+      </div>
 
       <div className="controls-row">
-        <button className="btn" onClick={fetchPosts} disabled={loadingPosts}>
-          {loadingPosts ? "Loading..." : "Get posts"}
+        <button
+          className="btn alt"
+          onClick={fetchPosts}
+          disabled={loadingPosts}
+        >
+          {loadingPosts ? (
+            <>
+              <span className="spinner spinner-with-margin"></span>
+              Loading Posts...
+            </>
+          ) : (
+            "🚀 Get Posts"
+          )}
         </button>
         <button
-          className="btn"
+          className="btn secondary"
           onClick={() => {
             setPosts([]);
             setErrorPosts(null);
           }}
         >
-          Clear
+          🗑️ Clear
         </button>
-        <div className="note-small">
-          Attachments and comments are on demand 💯.
-        </div>
+        {/* <div className="note-small">
+          ✨ Attachments and comments load automatically
+        </div> */}
       </div>
 
-      {errorPosts && <div className="error-mb12">Error: {errorPosts}</div>}
-
-      {posts.length === 0 && !loadingPosts && (
-        <div>No posts yet. Click Get posts.</div>
+      {errorPosts && (
+        <div className="error error-mb12">❌ Error: {errorPosts}</div>
       )}
+
+      {loadingPosts && (
+        <div>
+          {/* Loading skeletons */}
+          {[1, 2, 3].map((i) => (
+            <div key={i} className="post-card">
+              <div className="skeleton skeleton-title"></div>
+              <div className="skeleton skeleton-text"></div>
+              <div className="skeleton skeleton-text"></div>
+              <div className="skeleton skeleton-text skeleton-text-short"></div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* {posts.length === 0 && !loadingPosts && (
+        <div className="post-card text-center">
+          <h3>🌟 Welcome to FB Explorer!</h3>
+          <p>Click "Get Posts" to start exploring amazing content</p>
+        </div>
+      )} */}
 
       {posts.map((post) => (
         <div key={post.id} className="post-card">
           <div className="post-meta">
             <div className="post-date">
-              {new Date(post.created_time).toLocaleString()}
+              📅 {new Date(post.created_time).toLocaleString()}
             </div>
             <div className="post-comments-count">
-              Comments: {post.commentCount}
+              💬 {post.commentCount} Comments
             </div>
           </div>
           <div className="post-message">
-            {post.message || <em>(no message)</em>}
+            {post.message || <em>📝 (no message)</em>}
           </div>
 
-          <div className="post-actions">
-            {/* Attachment show/hide toggle */}
-            <button
-              className="btn"
-              onClick={() => showAttachmentsToggle(post.id)}
-              disabled={post.attachmentsLoading}
-            >
-              {post.attachmentsLoading
-                ? "Loading attachments..."
-                : post.showAttachments
-                ? "Hide attachments"
-                : "Show attachments"}
-            </button>
+          {/* Auto-load attachments on first render */}
+          {post.attachments === null &&
+            !post.attachmentsLoading &&
+            (() => {
+              // Auto-load attachments without user interaction
+              setTimeout(() => loadAttachments(post.id), 100);
+              return null;
+            })()}
 
+          {/* Show attachments loading state */}
+          {post.attachmentsLoading && (
+            <div className="mt8 text-center">
+              <span className="spinner spinner-with-margin"></span>
+              Loading attachments...
+            </div>
+          )}
+
+          {/* Show attachment error */}
+          {post.attachmentsError && (
+            <div className="error mt8">
+              ❌ Error loading attachments: {post.attachmentsError}
+            </div>
+          )}
+
+          {/* Render attachments automatically */}
+          {post.attachments && post.attachments.length > 0 && (
+            <div className="mt6">
+              <strong>🖼️ Attachments ({post.attachments.length}):</strong>
+              {renderAttachmentsSection(post)}
+            </div>
+          )}
+
+          <div className="post-actions">
             {/* Comments show/hide toggle */}
             <button
               className="btn"
               onClick={() => toggleComments(post.id)}
               disabled={post.commentsLoading}
             >
-              {post.commentsLoading
-                ? "Loading comments..."
-                : post.showComments
-                ? "Hide comments"
-                : "Show comments"}
+              {post.commentsLoading ? (
+                <>
+                  <span className="spinner spinner-with-margin"></span>
+                  Loading comments...
+                </>
+              ) : post.showComments ? (
+                "🙈 Hide Comments"
+              ) : (
+                "👀 Show Comments"
+              )}
             </button>
           </div>
 
-          {/* Attachments panel: visible only when showAttachments is true */}
-          {post.showAttachments && (
-            <div className="mt6">
-              <strong>Attachments:</strong>
-              {renderAttachmentsSection(post)}
-            </div>
-          )}
           {/* Comments panel: visible only when showComments is true */}
           {post.showComments && (
             <div className="mt10">
-              <strong>Comments:</strong>
+              <strong>💬 Comments:</strong>
               {renderCommentsSection(post)}
             </div>
           )}
         </div>
       ))}
-
-      {/* <div className="notes-block">
-        Notes:
-        <ul>
-          <li>
-            Comments are fetched from Graph with{" "}
-            <code>limit={COMMENTS_PAGE_LIMIT}</code> and paged using cursors;
-            pages are cached as you fetch them.
-          </li>
-          <li>
-            Attachments are fetched on demand and paginated client-side (
-            {ATTACHMENTS_PER_PAGE} per page).
-          </li>
-          <li>
-            In production, move the token & Graph calls to a backend proxy to
-            avoid CORS and for token security.
-          </li>
-        </ul>
-      </div> */}
     </div>
   );
 }
