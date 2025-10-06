@@ -623,3 +623,84 @@ body {
   color: rgba(255,255,255,0.9);
   border: 1px solid rgba(255,255,255,0.2);
 }
+
+/* Post layout with summary sidebar */
+.post-layout {
+  display: flex;
+  gap: 1rem;
+  align-items: flex-start;
+}
+
+.post-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.summary-sidebar {
+  width: 280px;
+  background: rgba(138, 43, 226, 0.1);
+  border: 1px solid rgba(138, 43, 226, 0.3);
+  border-radius: var(--radius-md);
+  padding: 0.75rem;
+  position: sticky;
+  top: 1rem;
+  max-height: calc(100vh - 2rem);
+  overflow-y: auto;
+  box-shadow: var(--shadow-md);
+}
+
+.summary-header {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: rgb(138, 43, 226);
+  margin-bottom: 0.5rem;
+  text-align: center;
+  padding-bottom: 0.5rem;
+  border-bottom: 2px solid rgba(138, 43, 226, 0.3);
+}
+
+.summary-content {
+  font-size: 0.85rem;
+  line-height: 1.5;
+  color: var(--text-primary);
+  text-align: left;
+}
+
+.summary-content strong {
+  font-weight: 700;
+  color: rgb(138, 43, 226);
+}
+
+.summary-content em {
+  font-style: italic;
+  color: var(--text-secondary);
+}
+
+.summary-content br {
+  margin-bottom: 0.3rem;
+}
+
+/* Analyze button styling */
+.analyze-btn {
+  background: linear-gradient(135deg, rgb(138, 43, 226), rgb(208, 132, 255)) !important;
+  box-shadow: 0 4px 12px rgba(138, 43, 226, 0.3) !important;
+}
+
+.analyze-btn:hover {
+  background: linear-gradient(135deg, rgb(208, 132, 255), rgb(138, 43, 226)) !important;
+  box-shadow: 0 6px 20px rgba(138, 43, 226, 0.4) !important;
+}
+
+/* Responsive design for summary sidebar */
+@media (max-width: 768px) {
+  .post-layout {
+    flex-direction: column;
+  }
+  
+  .summary-sidebar {
+    width: 100%;
+    position: relative;
+    top: 0;
+    max-height: none;
+  }
+}

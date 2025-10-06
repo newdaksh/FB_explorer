@@ -1,5 +1,11 @@
 const { useState, useEffect } = React;
 
+// Backend API base URL (use backend server running on port 3000)
+const BACKEND_URL =
+  window && window.location && window.location.hostname === "127.0.0.1"
+    ? "http://localhost:3000"
+    : "http://localhost:3000";
+
 /**
  * Replace ACCESS_TOKEN with a valid one or, better, move to a server proxy.
  * CORS: calling Graph from browser may hit CORS or permission issues — use a server proxy in production.
@@ -20,6 +26,94 @@ function App() {
   const [posts, setPosts] = useState([]);
   const [loadingPosts, setLoadingPosts] = useState(false);
   const [errorPosts, setErrorPosts] = useState(null);
+  const [analyzingComments, setAnalyzingComments] = useState({});
+  const [commentSummaries, setCommentSummaries] = useState({});
+
+  // Save posts to MongoDB
+  async function savePostsToMongoDB(postsData) {
+    try {
+      console.log("💾 Saving posts to MongoDB...", postsData.length, "posts");
+
+      // Normalize the payload: convert commentsPages -> comments[] so server
+      // receives a concrete comments array (prevents empty arrays being saved)
+      const payloadPosts = (postsData || []).map((p) => {
+        // Collect all comments from commentsPages if present
+        let allComments = [];
+        if (p.comments && Array.isArray(p.comments) && p.comments.length) {
+          // if already has comments array, use it
+          allComments = p.comments;
+        } else if (p.commentsPages && Array.isArray(p.commentsPages)) {
+          p.commentsPages.forEach((page) => {
+            if (page && page.data && Array.isArray(page.data)) {
+              allComments = allComments.concat(page.data);
+            }
+          });
+        }
+
+        // console.log(
+        //   `📝 Post ${p.id}: Extracted ${allComments.length} comments from ${
+        //     (p.commentsPages || []).length
+        //   } pages`
+        // )
+        // Build a minimal post doc to send to server (avoid functions / react state)
+        return {
+          id: p.id,
+          message: p.message || "",
+          created_time: p.created_time,
+          commentCount: p.commentCount || 0,
+          comments: allComments,
+          attachments: p.attachments || [],
+          lastUpdated: new Date().toISOString(),
+        };
+      });
+
+      const response = await fetch(`${BACKEND_URL}/api/posts`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ posts: payloadPosts }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+
+      const result = await response.json();
+      if (result.success) {
+        console.log("✅ Posts saved to MongoDB:", result.message);
+
+        // Show success notification to user
+        if (result.results) {
+          const created = result.results.filter(
+            (r) => r.operation === "created"
+          ).length;
+          const updated = result.results.filter(
+            (r) => r.operation === "updated"
+          ).length;
+          console.log(
+            `📊 Database Update: ${created} new posts, ${updated} updated posts`
+          );
+        }
+
+        return true;
+      } else {
+        console.error("❌ MongoDB save failed:", result.error);
+        return false;
+      }
+    } catch (error) {
+      console.error("❌ Error saving to MongoDB:", error.message);
+
+      // Check if it's a network error
+      if (error.name === "TypeError" && error.message.includes("fetch")) {
+        console.error(
+          "🔌 Network Error: Make sure the backend server is running on port 3000"
+        );
+      }
+
+      return false;
+    }
+  }
 
   // Fetch posts (no comment data, no attachments)
   async function fetchPosts() {
@@ -50,6 +144,9 @@ function App() {
         showComments: false,
       }));
       setPosts(items);
+
+      // Save posts to MongoDB
+      await savePostsToMongoDB(items);
     } catch (err) {
       console.error(err);
       setErrorPosts(err.message || "Fetch error");
@@ -127,8 +224,8 @@ function App() {
       });
 
       // No need for pagination calculations anymore
-      setPosts((prev) =>
-        prev.map((p) =>
+      setPosts((prev) => {
+        const updatedPosts = prev.map((p) =>
           p.id === postId
             ? {
                 ...p,
@@ -137,8 +234,16 @@ function App() {
                 attachmentsError: null,
               }
             : p
-        )
-      );
+        );
+
+        // Save updated posts to MongoDB when attachments are loaded
+        const updatedPost = updatedPosts.find((p) => p.id === postId);
+        if (updatedPost) {
+          savePostsToMongoDB([updatedPost]);
+        }
+
+        return updatedPosts;
+      });
     } catch (err) {
       console.error("Attachments error:", err);
       setPosts((prev) =>
@@ -172,6 +277,39 @@ function App() {
         return { ...p, showComments: willShow };
       })
     );
+  }
+
+  // Analyze comments using Gemini API
+  async function analyzeComments(postId) {
+    setAnalyzingComments((prev) => ({ ...prev, [postId]: true }));
+    try {
+      const response = await fetch(`${BACKEND_URL}/api/analyze-comments`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ postId }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+
+      const result = await response.json();
+      if (result.success) {
+        setCommentSummaries((prev) => ({
+          ...prev,
+          [postId]: result.summary,
+        }));
+      } else {
+        alert(result.error || "Failed to analyze comments");
+      }
+    } catch (error) {
+      console.error("Error analyzing comments:", error);
+      alert("Error analyzing comments: " + error.message);
+    } finally {
+      setAnalyzingComments((prev) => ({ ...prev, [postId]: false }));
+    }
   }
 
   // ------------- COMMENTS (numeric pagination with server cursors) -------------
@@ -258,8 +396,8 @@ function App() {
       }
 
       // update post with fetched pages
-      setPosts((prev) =>
-        prev.map((p) =>
+      setPosts((prev) => {
+        const updatedPosts = prev.map((p) =>
           p.id === postId
             ? {
                 ...p,
@@ -268,8 +406,16 @@ function App() {
                 commentsLoading: false,
               }
             : p
-        )
-      );
+        );
+
+        // Save updated posts to MongoDB when comments are loaded
+        const updatedPost = updatedPosts.find((p) => p.id === postId);
+        if (updatedPost) {
+          savePostsToMongoDB([updatedPost]);
+        }
+
+        return updatedPosts;
+      });
     } catch (err) {
       console.error("Comments fetch error:", err);
       setPosts((prev) =>
@@ -463,77 +609,112 @@ function App() {
 
       {posts.map((post) => (
         <div key={post.id} className="post-card">
-          <div className="post-meta">
-            <div className="post-date">
-              📅 {new Date(post.created_time).toLocaleString()}
-            </div>
-            <div className="post-comments-count">
-              💬 {post.commentCount} Comments
-            </div>
-          </div>
-          <div className="post-message">
-            {post.message || <em>📝 (no message)</em>}
-          </div>
+          <div className="post-layout">
+            <div className="post-content">
+              <div className="post-meta">
+                <div className="post-date">
+                  📅 {new Date(post.created_time).toLocaleString()}
+                </div>
+                <div className="post-comments-count">
+                  💬 {post.commentCount} Comments
+                </div>
+              </div>
+              <div className="post-message">
+                {post.message || <em>📝 (no message)</em>}
+              </div>
 
-          {/* Auto-load attachments on first render */}
-          {post.attachments === null &&
-            !post.attachmentsLoading &&
-            (() => {
-              // Auto-load attachments without user interaction
-              setTimeout(() => loadAttachments(post.id), 100);
-              return null;
-            })()}
+              {/* Auto-load attachments on first render */}
+              {post.attachments === null &&
+                !post.attachmentsLoading &&
+                (() => {
+                  // Auto-load attachments without user interaction
+                  setTimeout(() => loadAttachments(post.id), 100);
+                  return null;
+                })()}
 
-          {/* Show attachments loading state */}
-          {post.attachmentsLoading && (
-            <div className="mt8 text-center">
-              <span className="spinner spinner-with-margin"></span>
-              Loading attachments...
-            </div>
-          )}
-
-          {/* Show attachment error */}
-          {post.attachmentsError && (
-            <div className="error mt8">
-              ❌ Error loading attachments: {post.attachmentsError}
-            </div>
-          )}
-
-          {/* Render attachments automatically */}
-          {post.attachments && post.attachments.length > 0 && (
-            <div className="mt6">
-              <strong>🖼️ Attachments ({post.attachments.length}):</strong>
-              {renderAttachmentsSection(post)}
-            </div>
-          )}
-
-          <div className="post-actions">
-            {/* Comments show/hide toggle */}
-            <button
-              className="btn"
-              onClick={() => toggleComments(post.id)}
-              disabled={post.commentsLoading}
-            >
-              {post.commentsLoading ? (
-                <>
+              {/* Show attachments loading state */}
+              {post.attachmentsLoading && (
+                <div className="mt8 text-center">
                   <span className="spinner spinner-with-margin"></span>
-                  Loading comments...
-                </>
-              ) : post.showComments ? (
-                "🙈 Hide Comments"
-              ) : (
-                "👀 Show Comments"
+                  Loading attachments...
+                </div>
               )}
-            </button>
-          </div>
 
-          {/* Comments panel: visible only when showComments is true */}
-          {post.showComments && (
-            <div className="mt10">
-              <strong>💬 Comments:</strong>
-              {renderCommentsSection(post)}
+              {/* Show attachment error */}
+              {post.attachmentsError && (
+                <div className="error mt8">
+                  ❌ Error loading attachments: {post.attachmentsError}
+                </div>
+              )}
+
+              {/* Render attachments automatically */}
+              {post.attachments && post.attachments.length > 0 && (
+                <div className="mt6">
+                  <strong>🖼️ Attachments ({post.attachments.length}):</strong>
+                  {renderAttachmentsSection(post)}
+                </div>
+              )}
+
+              <div className="post-actions">
+                {/* Comments show/hide toggle */}
+                <button
+                  className="btn"
+                  onClick={() => toggleComments(post.id)}
+                  disabled={post.commentsLoading}
+                >
+                  {post.commentsLoading ? (
+                    <>
+                      <span className="spinner spinner-with-margin"></span>
+                      Loading comments...
+                    </>
+                  ) : post.showComments ? (
+                    "🙈 Hide Comments"
+                  ) : (
+                    "👀 Show Comments"
+                  )}
+                </button>
+
+                {/* Analyze Comments button */}
+                {post.commentCount > 0 && (
+                  <button
+                    className="btn analyze-btn"
+                    onClick={() => analyzeComments(post.id)}
+                    disabled={analyzingComments[post.id]}
+                  >
+                    {analyzingComments[post.id] ? (
+                      <>
+                        <span className="spinner spinner-with-margin"></span>
+                        Analyzing...
+                      </>
+                    ) : (
+                      "Analyze Comments⚡"
+                    )}
+                  </button>
+                )}
+              </div>
+
+              {/* Comments panel: visible only when showComments is true */}
+              {post.showComments && (
+                <div className="mt10">
+                  <strong>💬 Comments:</strong>
+                  {renderCommentsSection(post)}
+                </div>
+              )}
             </div>
-          )}
+
+            {/* Summary sidebar on the right */}
+            {commentSummaries[post.id] && (
+              <div className="summary-sidebar">
+                <div className="summary-header">📊 AI Summary</div>
+                <div
+                  className="summary-content"
+                  dangerouslySetInnerHTML={{
+                    __html: commentSummaries[post.id],
+                  }}
+                ></div>
+              </div>
+            )}
+          </div>
         </div>
       ))}
     </div>
